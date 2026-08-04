@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Threading;
 using System.Threading.Tasks;
 using Telegram.Bot;
@@ -16,7 +16,16 @@ PollEditorBotLauncher bot = new(logger);
 
 CancellationTokenSource cts = new();
 
+Console.CancelKeyPress += (_, e) =>
+{
+    e.Cancel = true;
+    cts.Cancel();
+};
+AppDomain.CurrentDomain.ProcessExit += (_, _) => cts.Cancel();
+
 await bot.StartReceivingAsync(cts);
 
-logger.LogInformationLine("Write something to finish the app");
-Console.ReadLine();
+logger.LogInformationLine("Bot is running. Press Ctrl+C to stop.");
+
+try { await Task.Delay(Timeout.Infinite, cts.Token); }
+catch (OperationCanceledException) { }
