@@ -12,17 +12,22 @@ using PollEditorBot;
 using PollEditorBot.Loggers;
 
 ILogger logger = new ConsoleLogger();
-PollEditorBotLauncher bot = new(logger);
 
 CancellationTokenSource cts = new();
 
-Console.CancelKeyPress += (, e) =>
+Console.CancelKeyPress += (_, e) =>
 {
-e.Cancel = true;
-cts.Cancel();
+    e.Cancel = true;
+    cts.Cancel();
 };
-AppDomain.CurrentDomain.ProcessExit += (, _) => cts.Cancel();
+AppDomain.CurrentDomain.ProcessExit += (_, _) => cts.Cancel();
 
+// Start keep-alive HTTP server (prevents Render free-tier from sleeping)
+var keepAliveServer = new KeepAliveServer(logger);
+_ = keepAliveServer.StartAsync(cts.Token);
+
+// Start the Telegram bot
+PollEditorBotLauncher bot = new(logger);
 await bot.StartReceivingAsync(cts);
 
 logger.LogInformationLine("Bot is running. Press Ctrl+C to stop.");
