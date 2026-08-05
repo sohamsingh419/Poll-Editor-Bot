@@ -20,6 +20,19 @@ public static class TelegramSettings
         return me.FirstName;
     }
 
+    // Owner settings
+    public static long OwnerId =>
+        long.TryParse(Environment.GetEnvironmentVariable("OWNER_ID"), out var id) ? id : 0;
+
+    // Owner Telegram username (without @) for the contact button in welcome message
+    public static string OwnerUsername =>
+        Environment.GetEnvironmentVariable("OWNER_USERNAME")?.TrimStart('@') ?? "";
+
+    // Force join: set to @channelusername or @groupusername
+    public static string ForceJoinChannel =>
+        Environment.GetEnvironmentVariable("FORCE_JOIN_CHANNEL") ?? "";
+
+    // Telegram poll limits
     public const int MinPollCountOfOptions = 2;
     public const int MaxPollCountOfOptions = 10;
     public const int MinPollOptionLength = 1;
