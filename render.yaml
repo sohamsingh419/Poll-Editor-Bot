@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: poll-editor-bot
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+
+    # Render sets PORT automatically; the app reads it via env var
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false          # you will enter this in the Render dashboard
+
+      # Optional — fill these in the Render dashboard if needed
+      - key: OWNER_ID
+        sync: false
+      - key: OWNER_USERNAME
+        sync: false
+      - key: FORCE_JOIN_CHANNEL
+        sync: false
+
+    healthCheckPath: /       # Render uses GET / to verify the service is up
