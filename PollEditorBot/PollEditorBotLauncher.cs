@@ -24,9 +24,16 @@ public class PollEditorBotLauncher
     readonly MessageSender messageSender;
 
     readonly Dictionary<long, MessageReceiver> messageReceivers = new();
-
-    // All users who have ever started the bot — used for broadcast
     readonly HashSet<long> allUsers = new();
+
+    // Per-user poll queue — for bulk replace
+    readonly Dictionary<long, List<Poll>> pollQueues = new();
+
+    // Interactive replace session: chatId → the old text user selected
+    readonly Dictionary<long, string> awaitingNewName = new();
+
+    // Candidate texts shown as buttons: chatId → list of unique texts
+    readonly Dictionary<long, List<string>> replaceCandidates = new();
 
     string botName = string.Empty;
 
@@ -40,9 +47,7 @@ public class PollEditorBotLauncher
 
     public async Task StartReceivingAsync(CancellationTokenSource cts)
     {
-        // Empty array = receive ALL update types (including CallbackQuery)
-        ReceiverOptions receiverOptions = new ReceiverOptions() { AllowedUpdates = Array.Empty<UpdateType>() };
-
+        ReceiverOptions receiverOptions = new() { AllowedUpdates = Array.Empty<UpdateType>() };
         bot.StartReceiving(
             updateHandler: (ITelegramBotClient bot, Update update, CancellationToken _) => HandleUpdateAsync(update, cts),
             pollingErrorHandler: (ITelegramBotClient bot, Exception exc, CancellationToken _) => HandlePollingErrorAsync(exc, cts),
@@ -66,9 +71,7 @@ public class PollEditorBotLauncher
 
             if (chat.Type == ChatType.Private)
             {
-                // Track every user who writes to the bot
                 allUsers.Add(chatId);
-
                 string senderStr = GetSenderStr(chat);
 
                 if (message.Text is { } messageText)
@@ -89,14 +92,12 @@ public class PollEditorBotLauncher
         }
     }
 
-    // ─── Force join helpers ───────────────────────────────────────────────────
+    // ─── Force join ───────────────────────────────────────────────────────────
 
-    /// <summary>Returns true if force-join is not configured OR user is already a member.</summary>
     async Task<bool> IsUserAllowedAsync(long userId)
     {
         string channel = TelegramSettings.ForceJoinChannel;
         if (string.IsNullOrEmpty(channel)) return true;
-
         try
         {
             ChatMember member = await bot.GetChatMemberAsync(channel, userId);
@@ -104,71 +105,139 @@ public class PollEditorBotLauncher
                 or ChatMemberStatus.Administrator
                 or ChatMemberStatus.Creator;
         }
-        catch
-        {
-            // If we can't check (e.g. bot not in channel), don't block the user
-            return true;
-        }
+        catch { return true; }
     }
 
     async Task SendForceJoinPromptAsync(long chatId, int replyToMessageId, CancellationTokenSource cts)
     {
         string channel = TelegramSettings.ForceJoinChannel.TrimStart('@');
-        string joinUrl = $"https://t.me/{channel}";
-
         var keyboard = new InlineKeyboardMarkup(new[]
         {
-            new[] { InlineKeyboardButton.WithUrl("📢 Join Channel / Group", joinUrl) },
+            new[] { InlineKeyboardButton.WithUrl("📢 Join Channel / Group", $"https://t.me/{channel}") },
             new[] { InlineKeyboardButton.WithCallbackData("✅ I've Joined", "check_join") }
         });
-
         await messageSender.SendTextMessageAsync(
-            "⚠️ <b>Join Required</b>\n\n" +
-            "You must join our channel/group before using this bot.\n\n" +
-            "1️⃣ Click <b>Join Channel / Group</b> below\n" +
-            "2️⃣ Then press <b>✅ I've Joined</b>",
+            "⚠️ <b>Join Required</b>\n\nBot use karne ke liye pehle channel/group join karo.\n\n" +
+            "1️⃣ <b>Join Channel / Group</b> dabao\n" +
+            "2️⃣ Phir <b>✅ I've Joined</b> dabao",
             chatId, replyToMessageId, keyboard, cts);
     }
 
-    // ─── Callback query (inline button presses) ───────────────────────────────
+    // ─── Callback query handler ───────────────────────────────────────────────
 
     async Task HandleCallbackQueryAsync(CallbackQuery callbackQuery, CancellationTokenSource cts)
     {
         long chatId = callbackQuery.Message!.Chat.Id;
         long userId = callbackQuery.From.Id;
         int messageId = callbackQuery.Message.MessageId;
+        string data = callbackQuery.Data ?? "";
 
         try
         {
-            if (callbackQuery.Data == "check_join")
+            // ── Force join verification ───────────────────────────────────────
+            if (data == "check_join")
             {
                 if (await IsUserAllowedAsync(userId))
                 {
-                    // Dismiss loading spinner — no popup text needed
                     await bot.AnswerCallbackQueryAsync(callbackQuery.Id, cancellationToken: cts.Token);
-
-                    // Remove the force-join prompt message
                     try { await bot.DeleteMessageAsync(chatId, messageId, cts.Token); } catch { }
-
-                    // Track user and show the welcome message
                     allUsers.Add(chatId);
-                    await HandleTextMessageAsync(
-                        callbackQuery.From.FirstName ?? "User",
-                        CommandsStr.Start,
-                        null,
-                        chatId,
-                        0,
-                        cts);
+                    await HandleTextMessageAsync(callbackQuery.From.FirstName ?? "User", CommandsStr.Start, null, chatId, 0, cts);
                 }
                 else
                 {
-                    // Show popup alert — user still hasn't joined
-                    await bot.AnswerCallbackQueryAsync(
-                        callbackQuery.Id,
-                        "❌ You haven't joined yet! Please join first, then try again.",
-                        showAlert: true,
-                        cancellationToken: cts.Token);
+                    await bot.AnswerCallbackQueryAsync(callbackQuery.Id,
+                        "❌ Abhi join nahi kiya! Pehle join karo, phir dobara try karo.",
+                        showAlert: true, cancellationToken: cts.Token);
                 }
+                return;
+            }
+
+            // ── Show replace picker (which text is the name?) ─────────────────
+            if (data == "start_replace")
+            {
+                await bot.AnswerCallbackQueryAsync(callbackQuery.Id, cancellationToken: cts.Token);
+
+                if (!pollQueues.ContainsKey(chatId) || pollQueues[chatId].Count == 0)
+                {
+                    await bot.SendTextMessageAsync(chatId, "⚠️ Queue mein koi poll nahi. Pehle polls bhejo.",
+                        cancellationToken: cts.Token);
+                    return;
+                }
+
+                // Collect ALL unique texts (question + options) across all queued polls
+                var queue = pollQueues[chatId];
+                var candidates = queue
+                    .SelectMany(p => p.Options.Select(o => o.Text ?? "")
+                        .Prepend(p.Question ?? ""))
+                    .Where(t => !string.IsNullOrWhiteSpace(t))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Take(18)   // Telegram limits inline keyboard rows
+                    .ToList();
+
+                replaceCandidates[chatId] = candidates;
+
+                // Build one button per candidate — display truncated, index in callback data
+                var rows = candidates.Select((text, i) =>
+                    new[] { InlineKeyboardButton.WithCallbackData(
+                        text.Length > 35 ? text[..35] + "…" : text,
+                        $"rp:{i}") }
+                ).ToList();
+                rows.Add(new[] { InlineKeyboardButton.WithCallbackData("❌ Cancel", "rp_cancel") });
+
+                await bot.SendTextMessageAsync(chatId,
+                    $"👇 <b>Queue mein {queue.Count} poll(s) hain.</b>\n\n" +
+                    "Kaunsa text <b>naam</b> hai jo replace karna hai?\n" +
+                    "<i>Neeche se select karo:</i>",
+                    parseMode: ParseMode.Html,
+                    replyMarkup: new InlineKeyboardMarkup(rows),
+                    cancellationToken: cts.Token);
+                return;
+            }
+
+            // ── Clear poll queue ──────────────────────────────────────────────
+            if (data == "clear_queue")
+            {
+                await bot.AnswerCallbackQueryAsync(callbackQuery.Id, cancellationToken: cts.Token);
+                if (pollQueues.ContainsKey(chatId)) pollQueues[chatId].Clear();
+                awaitingNewName.Remove(chatId);
+                await bot.SendTextMessageAsync(chatId, "🗑 Queue clear ho gaya!",
+                    cancellationToken: cts.Token);
+                return;
+            }
+
+            // ── Cancel replace ────────────────────────────────────────────────
+            if (data == "rp_cancel")
+            {
+                await bot.AnswerCallbackQueryAsync(callbackQuery.Id, "Cancelled", cancellationToken: cts.Token);
+                awaitingNewName.Remove(chatId);
+                return;
+            }
+
+            // ── User picked which text is the name ────────────────────────────
+            if (data.StartsWith("rp:"))
+            {
+                if (!replaceCandidates.ContainsKey(chatId))
+                {
+                    await bot.AnswerCallbackQueryAsync(callbackQuery.Id, "Session expire ho gaya. Dobara try karo.", showAlert: true, cancellationToken: cts.Token);
+                    return;
+                }
+
+                int idx = int.Parse(data[3..]);
+                string selectedText = replaceCandidates[chatId][idx];
+                awaitingNewName[chatId] = selectedText;
+
+                await bot.AnswerCallbackQueryAsync(callbackQuery.Id, cancellationToken: cts.Token);
+
+                // Delete the picker message
+                try { await bot.DeleteMessageAsync(chatId, messageId, cts.Token); } catch { }
+
+                await bot.SendTextMessageAsync(chatId,
+                    $"✅ Selected: <code>{selectedText}</code>\n\n" +
+                    "Ab <b>naya naam</b> type karke bhejo:",
+                    parseMode: ParseMode.Html,
+                    cancellationToken: cts.Token);
+                return;
             }
         }
         catch (Exception exc)
@@ -185,6 +254,16 @@ public class PollEditorBotLauncher
         {
             logging.LogCommandStrMessage(sender, messageText);
 
+            // ── Interactive replace: waiting for new name ─────────────────────
+            if (awaitingNewName.ContainsKey(chatId) && !messageText.StartsWith("/"))
+            {
+                string oldText = awaitingNewName[chatId];
+                string newText = messageText.Trim();
+                awaitingNewName.Remove(chatId);
+                await ApplyBulkReplaceAsync(chatId, replyToMessageId, new[] { oldText }, newText, cts);
+                return;
+            }
+
             // ── Broadcast (owner only) ────────────────────────────────────────
             if (messageText.StartsWith(CommandsStr.Broadcast))
             {
@@ -192,7 +271,28 @@ public class PollEditorBotLauncher
                 return;
             }
 
-            // ── Force join check (only on /start) ────────────────────────────
+            // ── Power-user: /replace old | new (still supported) ─────────────
+            if (messageText.StartsWith(CommandsStr.Replace))
+            {
+                await HandlePowerReplaceAsync(messageText, chatId, replyToMessageId, cts);
+                return;
+            }
+
+            // ── /my_polls / /clear_polls ──────────────────────────────────────
+            if (messageText.Trim() == CommandsStr.MyPolls)
+            {
+                await HandleMyPollsAsync(chatId, replyToMessageId, cts);
+                return;
+            }
+            if (messageText.Trim() == CommandsStr.ClearPolls)
+            {
+                if (pollQueues.ContainsKey(chatId)) pollQueues[chatId].Clear();
+                awaitingNewName.Remove(chatId);
+                await messageSender.SendTextMessageAsync("🗑 Queue clear ho gaya!", chatId, replyToMessageId, null, cts);
+                return;
+            }
+
+            // ── Force join check on /start ────────────────────────────────────
             if (messageText.Trim() == CommandsStr.Start
                 && !string.IsNullOrEmpty(TelegramSettings.ForceJoinChannel)
                 && !await IsUserAllowedAsync(chatId))
@@ -223,7 +323,20 @@ public class PollEditorBotLauncher
             bool isFinished = botCommand.IsFinished ?? false;
             IReplyMarkup? replyMarkup = botCommand.ReplyMarkup;
 
-            if (isFinished && !botCommand.IsStrResponse)
+            if (isFinished && botCommand.BulkPolls.Count > 0)
+            {
+                if (botCommand.MessageStr is { } confirmMsg)
+                {
+                    await logging.LogStrMessage(confirmMsg);
+                    await messageSender.SendTextMessageAsync(confirmMsg, chatId, replyToMessageId, null, cts);
+                }
+                foreach (var bulkPoll in botCommand.BulkPolls)
+                {
+                    await logging.LogPollMessageAsync(bulkPoll);
+                    await messageSender.SendPollMessageAsync(bulkPoll, chatId, 0, new ReplyKeyboardRemove(), cts);
+                }
+            }
+            else if (isFinished && !botCommand.IsStrResponse)
             {
                 var poll = botCommand.Poll!;
                 await logging.LogPollMessageAsync(poll);
@@ -258,47 +371,178 @@ public class PollEditorBotLauncher
         }
     }
 
-    // ─── Broadcast ────────────────────────────────────────────────────────────
+    // ─── Poll received ────────────────────────────────────────────────────────
+
+    async Task HandlePollMessageAsync(string sender, Poll pollMessage, long chatId, int replyToMessageId, CancellationTokenSource cts)
+    {
+        if (PollHelper.IfQuizSentCorrectly(pollMessage))
+        {
+            // Set as current poll for single-edit commands
+            MessageReceiver newMessageReceiver = new(pollMessage);
+            if (!messageReceivers.ContainsKey(chatId))
+                messageReceivers.Add(chatId, newMessageReceiver);
+            else
+                messageReceivers[chatId] = newMessageReceiver;
+
+            // Add to queue for bulk replace
+            if (!pollQueues.ContainsKey(chatId))
+                pollQueues[chatId] = new List<Poll>();
+            pollQueues[chatId].Add(pollMessage);
+
+            int queueCount = pollQueues[chatId].Count;
+            await logging.LogPollMessageAsync(pollMessage);
+
+            // Show action buttons
+            var keyboard = new InlineKeyboardMarkup(new[]
+            {
+                new[] { InlineKeyboardButton.WithCallbackData($"🔄 Naam Replace Karo ({queueCount} poll)", "start_replace") },
+                new[] { InlineKeyboardButton.WithCallbackData("🗑 Queue Clear Karo", "clear_queue") }
+            });
+
+            await messageSender.SendTextMessageAsync(
+                $"✅ Poll #{queueCount} queue mein add ho gaya!\n\n" +
+                "<i>Aur polls bhej sakte ho ya neeche button dabao.</i>",
+                chatId, replyToMessageId, keyboard, cts);
+        }
+        else
+        {
+            await LogWarningMessage(TelegramException.QuizSentIncorrectly, chatId, replyToMessageId, null, cts);
+        }
+    }
+
+    // ─── Bulk replace logic ───────────────────────────────────────────────────
+
+    async Task ApplyBulkReplaceAsync(long chatId, int replyToMessageId, string[] oldValues, string newText, CancellationTokenSource cts)
+    {
+        if (!pollQueues.ContainsKey(chatId) || pollQueues[chatId].Count == 0)
+        {
+            await messageSender.SendTextMessageAsync(
+                "⚠️ Queue mein koi poll nahi. Pehle polls bhejo.",
+                chatId, replyToMessageId, null, cts);
+            return;
+        }
+
+        var queue = pollQueues[chatId];
+        var updatedPolls = queue.Select(p => ApplyReplace(p, oldValues, newText)).ToList();
+        pollQueues[chatId] = updatedPolls;
+
+        string oldDisplay = string.Join(", ", oldValues.Select(v => $"<code>{v}</code>"));
+        await messageSender.SendTextMessageAsync(
+            $"✅ <b>Replace ho gaya!</b>\n{oldDisplay} → <b>{newText}</b>\n\n" +
+            $"📤 {updatedPolls.Count} polls aa rahe hain 👇",
+            chatId, replyToMessageId, null, cts);
+
+        foreach (var poll in updatedPolls)
+        {
+            await logging.LogPollMessageAsync(poll);
+            await messageSender.SendPollMessageAsync(poll, chatId, 0, new ReplyKeyboardRemove(), cts);
+        }
+    }
+
+    static Poll ApplyReplace(Poll poll, string[] oldValues, string newText)
+    {
+        string question = poll.Question ?? "";
+        var options = poll.Options?.Select(o => o.Text ?? "").ToArray() ?? Array.Empty<string>();
+
+        foreach (string old in oldValues)
+        {
+            question = question.Replace(old, newText, StringComparison.OrdinalIgnoreCase);
+            options = options.Select(o => o.Replace(old, newText, StringComparison.OrdinalIgnoreCase)).ToArray();
+        }
+
+        return new Poll
+        {
+            Question = question,
+            Options = options.Select(o => new PollOption { Text = o }).ToArray(),
+            Type = poll.Type,
+            IsAnonymous = poll.IsAnonymous,
+            AllowsMultipleAnswers = poll.AllowsMultipleAnswers,
+            CorrectOptionId = poll.CorrectOptionId,
+            Explanation = poll.Explanation,
+            ExplanationEntities = poll.ExplanationEntities,
+            OpenPeriod = poll.OpenPeriod,
+            CloseDate = poll.CloseDate,
+            IsClosed = poll.IsClosed,
+        };
+    }
+
+    // ─── Power-user: /replace old | new ──────────────────────────────────────
+
+    async Task HandlePowerReplaceAsync(string messageText, long chatId, int replyToMessageId, CancellationTokenSource cts)
+    {
+        string args = messageText.Length > CommandsStr.Replace.Length
+            ? messageText[(CommandsStr.Replace.Length)..].Trim()
+            : "";
+
+        if (!args.Contains('|'))
+        {
+            await messageSender.SendTextMessageAsync(
+                "ℹ️ <b>Usage:</b> <code>/replace purana | naya</code>\n" +
+                "Multiple: <code>/replace A,B | naya</code>",
+                chatId, replyToMessageId, null, cts);
+            return;
+        }
+
+        int sep = args.IndexOf('|');
+        string[] oldValues = args[..sep].Trim()
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        string newText = args[(sep + 1)..].Trim();
+
+        if (oldValues.Length == 0 || string.IsNullOrEmpty(newText))
+        {
+            await messageSender.SendTextMessageAsync(
+                "⚠️ Purana aur naya dono likhna zaroori hai.",
+                chatId, replyToMessageId, null, cts);
+            return;
+        }
+
+        await ApplyBulkReplaceAsync(chatId, replyToMessageId, oldValues, newText, cts);
+    }
+
+    async Task HandleMyPollsAsync(long chatId, int replyToMessageId, CancellationTokenSource cts)
+    {
+        if (!pollQueues.ContainsKey(chatId) || pollQueues[chatId].Count == 0)
+        {
+            await messageSender.SendTextMessageAsync(
+                "📭 Queue khali hai. Polls bhejo to yahan dikhenge.",
+                chatId, replyToMessageId, null, cts);
+            return;
+        }
+        var queue = pollQueues[chatId];
+        string list = string.Join("\n", queue.Select((p, i) => $"{i + 1}. {p.Question}"));
+        await messageSender.SendTextMessageAsync(
+            $"📋 <b>Queue mein {queue.Count} polls:</b>\n\n{list}",
+            chatId, replyToMessageId, null, cts);
+    }
+
+    // ─── Broadcast (owner only) ───────────────────────────────────────────────
 
     async Task HandleBroadcastAsync(string messageText, long chatId, int replyToMessageId, CancellationTokenSource cts)
     {
         long ownerId = TelegramSettings.OwnerId;
-
-        // Only the owner can broadcast
         if (ownerId == 0 || chatId != ownerId)
         {
-            await messageSender.SendTextMessageAsync(
-                "⛔ You are not authorized to use this command.",
-                chatId, replyToMessageId, null, cts);
+            await messageSender.SendTextMessageAsync("⛔ Aap authorized nahi hain.", chatId, replyToMessageId, null, cts);
             return;
         }
 
-        // Extract message after "/broadcast "
         string broadcastText = messageText.Length > CommandsStr.Broadcast.Length
-            ? messageText[(CommandsStr.Broadcast.Length)..].Trim()
-            : "";
+            ? messageText[(CommandsStr.Broadcast.Length)..].Trim() : "";
 
         if (string.IsNullOrEmpty(broadcastText))
         {
-            await messageSender.SendTextMessageAsync(
-                "ℹ️ Usage: <code>/broadcast Your message here</code>",
-                chatId, replyToMessageId, null, cts);
+            await messageSender.SendTextMessageAsync("ℹ️ Usage: <code>/broadcast message yahan</code>", chatId, replyToMessageId, null, cts);
             return;
         }
 
-        await messageSender.SendTextMessageAsync(
-            $"📤 Broadcasting to {allUsers.Count} users...",
-            chatId, replyToMessageId, null, cts);
+        await messageSender.SendTextMessageAsync($"📤 {allUsers.Count} users ko bhej raha hun...", chatId, replyToMessageId, null, cts);
 
         int sent = 0, failed = 0;
         foreach (long uid in allUsers.ToList())
         {
             try
             {
-                await bot.SendTextMessageAsync(
-                    uid, broadcastText,
-                    parseMode: ParseMode.Html,
-                    cancellationToken: cts.Token);
+                await bot.SendTextMessageAsync(uid, broadcastText, parseMode: ParseMode.Html, cancellationToken: cts.Token);
                 sent++;
             }
             catch { failed++; }
@@ -309,32 +553,10 @@ public class PollEditorBotLauncher
             chatId, replyToMessageId, null, cts);
     }
 
-    // ─── Misc handlers ────────────────────────────────────────────────────────
+    // ─── Misc ─────────────────────────────────────────────────────────────────
 
     bool IsMessageEntitiesTypeSupported(IEnumerable<MessageEntity>? messageEntities)
         => messageEntities?.All(msgEntity => Enum.IsDefined(msgEntity.Type)) ?? true;
-
-    async Task HandlePollMessageAsync(string sender, Poll pollMessage, long chatId, int replyToMessageId, CancellationTokenSource cts)
-    {
-        if (PollHelper.IfQuizSentCorrectly(pollMessage))
-        {
-            MessageReceiver newMessageReceiver = new(pollMessage);
-
-            if (!messageReceivers.ContainsKey(chatId))
-                messageReceivers.Add(chatId, newMessageReceiver);
-            else
-                messageReceivers[chatId] = newMessageReceiver;
-
-            await messageSender.SendTextMessageAsync(
-                "Now, please send one of the available commands.",
-                chatId, replyToMessageId, new ReplyKeyboardRemove(), cts);
-            await logging.LogPollMessageAsync(pollMessage);
-        }
-        else
-        {
-            await LogWarningMessage(TelegramException.QuizSentIncorrectly, chatId, replyToMessageId, null, cts);
-        }
-    }
 
     async Task HandleAnotherMessageTypeAsync(long chatId, int replyToMessageId, CancellationTokenSource cts)
         => await LogWarningMessage(TelegramException.MessageTypeNotSuitable, chatId, replyToMessageId, null, cts);
@@ -357,24 +579,14 @@ public class PollEditorBotLauncher
                 return Task.CompletedTask;
             }
         }
-
         logger.LogError(exc.Message);
         return Task.CompletedTask;
     }
 
-    async Task StopBotAsync(CancellationTokenSource cts)
-    {
-        User me = await bot.GetMeAsync();
-        string fName = me.FirstName;
-        logger.LogDebugLine($"\"{fName}\" finished listening ...");
-        cts.Cancel();
-    }
-
     string GetSenderStr(Chat chat)
     {
-        string senderStr = chat.FirstName ?? "";
-        if (chat.Username is string userName)
-            senderStr += $" (@{userName})";
-        return senderStr;
+        string s = chat.FirstName ?? "";
+        if (chat.Username is string u) s += $" (@{u})";
+        return s;
     }
 }
