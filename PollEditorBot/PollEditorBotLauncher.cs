@@ -12,6 +12,7 @@ using PollEditorBot.Settings;
 using PollEditorBot.Exceptions;
 using PollEditorBot.Loggers;
 using PollEditorBot.Commands;
+using PollEditorBot.Bulk;
 using Telegram.Bot.Types.ReplyMarkups;
 
 namespace PollEditorBot;
@@ -24,6 +25,9 @@ public class PollEditorBotLauncher
     readonly MessageSender messageSender;
 
     readonly Dictionary<long, MessageReceiver> messageReceivers = new();
+
+    // Bulk edit sessions (one per user)
+    readonly Dictionary<long, BulkEditSession> bulkSessions = new();
 
     // All users who have ever started the bot — used for broadcast
     readonly HashSet<long> allUsers = new();
@@ -201,6 +205,25 @@ public class PollEditorBotLauncher
                 return;
             }
 
+            // ── Bulk edit: start session ──────────────────────────────────────
+            if (messageText.Trim() == CommandsStr.BulkEdit)
+            {
+                bulkSessions[chatId] = new BulkEditSession();
+                await messageSender.SendTextMessageAsync(
+                    "🔁 <b>Bulk Edit mode activated!</b>\n\n" +
+                    "📤 Send me your polls one by one.\n" +
+                    "When you've sent all of them, type <code>/bulk_done</code> to start editing.",
+                    chatId, replyToMessageId, new ReplyKeyboardRemove(), cts);
+                return;
+            }
+
+            // ── Bulk edit: finish collecting / drive state machine ────────────
+            if (bulkSessions.TryGetValue(chatId, out var bulkSession))
+            {
+                await HandleBulkTextAsync(bulkSession, messageText, chatId, replyToMessageId, cts);
+                return;
+            }
+
             // ── Normal command flow ───────────────────────────────────────────
             if (!messageReceivers.ContainsKey(chatId))
                 messageReceivers.Add(chatId, new());
@@ -316,6 +339,26 @@ public class PollEditorBotLauncher
 
     async Task HandlePollMessageAsync(string sender, Poll pollMessage, long chatId, int replyToMessageId, CancellationTokenSource cts)
     {
+        // ── Bulk collect mode ─────────────────────────────────────────────────
+        if (bulkSessions.TryGetValue(chatId, out var bulkSession)
+            && bulkSession.State == BulkEditState.CollectingPolls)
+        {
+            if (!PollHelper.IfQuizSentCorrectly(pollMessage))
+            {
+                await LogWarningMessage(TelegramException.QuizSentIncorrectly, chatId, replyToMessageId, null, cts);
+                return;
+            }
+
+            bulkSession.AddPoll(pollMessage);
+            int count = bulkSession.Polls.Count;
+            await messageSender.SendTextMessageAsync(
+                $"✅ Poll #{count} added!\n\nSend more polls or type <code>/bulk_done</code> to start editing.",
+                chatId, replyToMessageId, new ReplyKeyboardRemove(), cts);
+            await logging.LogPollMessageAsync(pollMessage);
+            return;
+        }
+
+        // ── Normal single-poll flow ───────────────────────────────────────────
         if (PollHelper.IfQuizSentCorrectly(pollMessage))
         {
             MessageReceiver newMessageReceiver = new(pollMessage);
@@ -334,6 +377,166 @@ public class PollEditorBotLauncher
         {
             await LogWarningMessage(TelegramException.QuizSentIncorrectly, chatId, replyToMessageId, null, cts);
         }
+    }
+
+    // ─── Bulk edit text handler ───────────────────────────────────────────────
+
+    async Task HandleBulkTextAsync(BulkEditSession session, string text, long chatId, int replyToMessageId, CancellationTokenSource cts)
+    {
+        string trimmed = text.Trim();
+
+        switch (session.State)
+        {
+            // ── Still collecting polls ────────────────────────────────────────
+            case BulkEditState.CollectingPolls:
+            {
+                if (trimmed == CommandsStr.BulkDone)
+                {
+                    if (session.Polls.Count == 0)
+                    {
+                        await messageSender.SendTextMessageAsync(
+                            "⚠️ You haven't sent any polls yet! Send polls first, then /bulk_done.",
+                            chatId, replyToMessageId, null, cts);
+                        return;
+                    }
+
+                    session.StartEditing();
+
+                    // Show summary of collected polls
+                    string summary = session.GetPollsSummary();
+                    await messageSender.SendTextMessageAsync(summary, chatId, replyToMessageId, null, cts);
+
+                    // Ask for old name
+                    var keyboard = new ReplyKeyboardMarkup(new[] { new KeyboardButton(CommandsStr.BulkSkipName) })
+                        { ResizeKeyboard = true, OneTimeKeyboard = true };
+                    await messageSender.SendTextMessageAsync(
+                        "✏️ <b>Step 1/2 — Name replacement</b>\n\n" +
+                        "Send the <b>old name/text</b> you want to replace in all polls.\n" +
+                        "It will be searched in the question, options, and explanation.",
+                        chatId, replyToMessageId, keyboard, cts);
+                }
+                else
+                {
+                    await messageSender.SendTextMessageAsync(
+                        "📤 Send polls now, or type <code>/bulk_done</code> when finished.",
+                        chatId, replyToMessageId, null, cts);
+                }
+                break;
+            }
+
+            // ── Waiting for old name ──────────────────────────────────────────
+            case BulkEditState.SettingOldName:
+            {
+                if (trimmed == CommandsStr.BulkSkipName)
+                {
+                    session.SetOldName(null); // skip name replacement
+                    await AskExplanationOrSendAsync(session, chatId, replyToMessageId, cts);
+                }
+                else
+                {
+                    session.SetOldName(trimmed);
+                    var keyboard = new ReplyKeyboardMarkup(new[]
+                    {
+                        new KeyboardButton(CommandsStr.BulkEmptyName),
+                        new KeyboardButton(CommandsStr.BulkSkipName)
+                    }) { ResizeKeyboard = true, OneTimeKeyboard = true };
+                    await messageSender.SendTextMessageAsync(
+                        $"✅ Old name set: <code>{trimmed}</code>\n\n" +
+                        "Now send the <b>new name</b> to replace it with.\n" +
+                        "• Tap <b>🚫 Empty (No Name)</b> to remove it completely\n" +
+                        "• Tap <b>⏭ Skip Name</b> to keep the old name",
+                        chatId, replyToMessageId, keyboard, cts);
+                }
+                break;
+            }
+
+            // ── Waiting for new name ──────────────────────────────────────────
+            case BulkEditState.SettingNewName:
+            {
+                if (trimmed == CommandsStr.BulkSkipName)
+                {
+                    // User changed mind — keep the old name as-is, move on
+                    session.SetNewName(session.OldName);
+                }
+                else if (trimmed == CommandsStr.BulkEmptyName)
+                {
+                    session.SetNewName(null); // replace with empty string
+                }
+                else
+                {
+                    session.SetNewName(trimmed);
+                }
+                await AskExplanationOrSendAsync(session, chatId, replyToMessageId, cts);
+                break;
+            }
+
+            // ── Waiting for explanation ───────────────────────────────────────
+            case BulkEditState.SettingExplanation:
+            {
+                if (trimmed == CommandsStr.BulkSkipExplanation)
+                    session.SetExplanation(null);
+                else
+                    session.SetExplanation(trimmed);
+
+                await SendBulkPollsAsync(session, chatId, replyToMessageId, cts);
+                bulkSessions.Remove(chatId);
+                break;
+            }
+
+            case BulkEditState.Done:
+                await SendBulkPollsAsync(session, chatId, replyToMessageId, cts);
+                bulkSessions.Remove(chatId);
+                break;
+        }
+    }
+
+    async Task AskExplanationOrSendAsync(BulkEditSession session, long chatId, int replyToMessageId, CancellationTokenSource cts)
+    {
+        if (session.State == BulkEditState.SettingExplanation)
+        {
+            var keyboard = new ReplyKeyboardMarkup(new[] { new KeyboardButton(CommandsStr.BulkSkipExplanation) })
+                { ResizeKeyboard = true, OneTimeKeyboard = true };
+            await messageSender.SendTextMessageAsync(
+                "🧠 <b>Step 2/2 — Quiz explanation</b>\n\n" +
+                "Send the <b>explanation</b> to set for all quiz polls.\n" +
+                "Or tap <b>⏭ Skip Explanation</b> to leave them unchanged.",
+                chatId, replyToMessageId, keyboard, cts);
+        }
+        else
+        {
+            // No quiz polls — skip straight to sending
+            await SendBulkPollsAsync(session, chatId, replyToMessageId, cts);
+            bulkSessions.Remove(chatId);
+        }
+    }
+
+    async Task SendBulkPollsAsync(BulkEditSession session, long chatId, int replyToMessageId, CancellationTokenSource cts)
+    {
+        await messageSender.SendTextMessageAsync(
+            $"🚀 <b>Sending {session.Polls.Count} poll(s)...</b>",
+            chatId, replyToMessageId, new ReplyKeyboardRemove(), cts);
+
+        int sent = 0;
+        foreach (var poll in session.Polls)
+        {
+            try
+            {
+                await messageSender.SendPollMessageAsync(poll, chatId, 0, new ReplyKeyboardRemove(), cts);
+                sent++;
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarningLine($"Bulk send failed for poll #{sent + 1}: {ex.Message}");
+                await messageSender.SendTextMessageAsync(
+                    $"⚠️ Could not send poll #{sent + 1}: {ex.Message}",
+                    chatId, 0, null, cts);
+            }
+        }
+
+        await messageSender.SendTextMessageAsync(
+            $"✅ <b>Done!</b> Sent <b>{sent}/{session.Polls.Count}</b> polls successfully.\n\n" +
+            "You can start a new bulk session with /bulk_edit.",
+            chatId, 0, new ReplyKeyboardRemove(), cts);
     }
 
     async Task HandleAnotherMessageTypeAsync(long chatId, int replyToMessageId, CancellationTokenSource cts)
