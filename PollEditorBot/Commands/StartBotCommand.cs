@@ -1,21 +1,30 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+using PollEditorBot.Settings;
+using Telegram.Bot.Types.ReplyMarkups;
 
 namespace PollEditorBot.Commands;
 
 public class StartBotCommand : BaseBotCommand
 {
-    const string readmeLink = "https://github.com/Kurulko/Poll-Editor-Bot/blob/master/README.md";
     public override void Execute(string? commandStr)
     {
-        string resultStr = string.Empty;
+        MessageStr =
+            "👋 <b>Welcome to Poll Editor Bot!</b>\n\n" +
+            "I can help you <b>create and edit</b> Telegram polls with ease.\n\n" +
+            "📋 <b>What you can do:</b>\n" +
+            "• Send me a poll to start editing\n" +
+            "• Change question, options, poll type & more\n" +
+            "• Create new polls from scratch\n\n" +
+            "📌 Use /help to see all available commands.\n\n" +
+            "⚡ Just send me any poll and I'll get started!";
 
-        resultStr += $"Welcome! Here you can edit your polls. To learn more, read <a href='{readmeLink}'>it</a>";
+        string ownerUsername = TelegramSettings.OwnerUsername;
+        if (!string.IsNullOrEmpty(ownerUsername))
+        {
+            ReplyMarkup = new InlineKeyboardMarkup(
+                InlineKeyboardButton.WithUrl("👤 Contact Owner", $"https://t.me/{ownerUsername}")
+            );
+        }
 
-        MessageStr = resultStr;
         IsStrResponse = true;
         IsFinished = true;
     }
