@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -47,6 +47,13 @@ public class HelpBotCommand : BaseBotCommand
         resultStr += "\n<b>No need to send a poll for these options</b>:\n\n";
 
         resultStr += $"• {CommandsStr.CreatePoll} - create a poll\n";
+
+        resultStr += $"\n<b>🔁 Bulk edit (multiple polls at once)</b>:\n\n";
+        resultStr += $"• {CommandsStr.BulkEdit} - start a bulk editing session\n";
+        resultStr += $"  → Send multiple polls one by one\n";
+        resultStr += $"  → Then use {CommandsStr.BulkDone} to begin editing all of them together\n";
+        resultStr += $"  → Replace a name across all polls, set explanation for all quizzes\n";
+        resultStr += $"  → Bot sends all edited polls at once 🚀\n";
 
         resultStr += "\nOthers:\n\n";
 
