@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -29,4 +29,5 @@ public struct CommandsStr
     public const string AddPollOptionToEnd = "/add_option_to_end";
     public const string DeletePollOption = "/delete_option";
     public const string AddLinkToPoll = "/add_link";
+    public const string Broadcast = "/broadcast";
 }
