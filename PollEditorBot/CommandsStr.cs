@@ -30,4 +30,13 @@ public struct CommandsStr
     public const string DeletePollOption = "/delete_option";
     public const string AddLinkToPoll = "/add_link";
     public const string Broadcast = "/broadcast";
+
+    // ── Bulk edit ────────────────────────────────────────────────────────
+    public const string BulkEdit = "/bulk_edit";
+    public const string BulkDone = "/bulk_done";
+
+    // ── Bulk keyboard button labels (not slash-commands) ─────────────────
+    public const string BulkSkipName        = "⏭ Skip Name";
+    public const string BulkEmptyName       = "🚫 Empty (No Name)";
+    public const string BulkSkipExplanation = "⏭ Skip Explanation";
 }
