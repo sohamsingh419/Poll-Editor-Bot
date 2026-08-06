@@ -105,12 +105,28 @@ public class BulkEditSession
             {
                 poll.Question = poll.Question.Replace(name, newName);
 
+                // Replace in each option; keep the original text if result would be empty
                 foreach (var opt in poll.Options)
-                    opt.Text = opt.Text.Replace(name, newName);
+                {
+                    string replaced = opt.Text.Replace(name, newName).Trim();
+                    if (!string.IsNullOrEmpty(replaced))
+                        opt.Text = replaced;
+                    // else: leave original text — empty options crash Telegram
+                }
 
                 if (poll.Explanation is not null)
+                {
                     poll.Explanation = poll.Explanation.Replace(name, newName);
+                    // Clear entities — offsets are invalid after text changes
+                    poll.ExplanationEntities = null;
+                }
             }
+
+            // Remove options that are empty/whitespace (e.g. the option WAS the watermark)
+            // but only if at least 2 non-empty options remain; otherwise keep all.
+            var nonEmpty = poll.Options.Where(o => !string.IsNullOrWhiteSpace(o.Text)).ToArray();
+            if (nonEmpty.Length >= 2)
+                poll.Options = nonEmpty;
         }
     }
 
@@ -120,7 +136,11 @@ public class BulkEditSession
         {
             bool isQuiz = string.Equals(poll.Type, "quiz", StringComparison.OrdinalIgnoreCase);
             if (isQuiz)
+            {
                 poll.Explanation = explanation;
+                // Clear original entities — offsets don't match the new text
+                poll.ExplanationEntities = null;
+            }
         }
     }
 
