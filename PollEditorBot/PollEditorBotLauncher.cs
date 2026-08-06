@@ -411,8 +411,10 @@ public class PollEditorBotLauncher
                         { ResizeKeyboard = true, OneTimeKeyboard = true };
                     await messageSender.SendTextMessageAsync(
                         "✏️ <b>Step 1/2 — Name replacement</b>\n\n" +
-                        "Send the <b>old name/text</b> you want to replace in all polls.\n" +
-                        "It will be searched in the question, options, and explanation.",
+                        "Send the <b>old name(s)</b> you want to replace in all polls.\n" +
+                        "They will be searched in the question, options, and explanation.\n\n" +
+                        "📌 For <b>multiple names</b>, separate them with <code>|</code>:\n" +
+                        "<code>Name1 | Name2 | Name3</code>",
                         chatId, replyToMessageId, keyboard, cts);
                 }
                 else
