@@ -25,7 +25,15 @@ public class BulkEditSession
     public BulkEditState State { get; private set; } = BulkEditState.CollectingPolls;
 
     // ── Edit values ────────────────────────────────────────────────────────
+    /// <summary>Raw input from user (may contain | separators).</summary>
     public string? OldName       { get; private set; }
+
+    /// <summary>All individual old names split by '|' and trimmed.</summary>
+    public string[] OldNames =>
+        OldName is null
+            ? Array.Empty<string>()
+            : OldName.Split('|').Select(n => n.Trim()).Where(n => n.Length > 0).ToArray();
+
     public bool SkipNameReplace  { get; private set; }
     public string? Explanation   { get; private set; }
 
@@ -83,17 +91,26 @@ public class BulkEditSession
 
     // ── Private apply helpers ──────────────────────────────────────────────
 
-    void ApplyNameReplacement(string oldName, string newName)
+    void ApplyNameReplacement(string oldNamesRaw, string newName)
     {
+        // Support multiple old names separated by '|'
+        var names = oldNamesRaw.Split('|')
+                               .Select(n => n.Trim())
+                               .Where(n => n.Length > 0)
+                               .ToArray();
+
         foreach (var poll in Polls)
         {
-            poll.Question = poll.Question.Replace(oldName, newName);
+            foreach (var name in names)
+            {
+                poll.Question = poll.Question.Replace(name, newName);
 
-            foreach (var opt in poll.Options)
-                opt.Text = opt.Text.Replace(oldName, newName);
+                foreach (var opt in poll.Options)
+                    opt.Text = opt.Text.Replace(name, newName);
 
-            if (poll.Explanation is not null)
-                poll.Explanation = poll.Explanation.Replace(oldName, newName);
+                if (poll.Explanation is not null)
+                    poll.Explanation = poll.Explanation.Replace(name, newName);
+            }
         }
     }
 
