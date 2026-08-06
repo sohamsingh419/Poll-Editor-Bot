@@ -191,14 +191,14 @@ public class PollEditorBotLauncher
 
         var keyboard = new InlineKeyboardMarkup(new[]
         {
-            new[] { InlineKeyboardButton.WithUrl("📢 Join Channel / Group", joinUrl) },
+            new[] { InlineKeyboardButton.WithUrl("📢 Join Group", joinUrl) },
             new[] { InlineKeyboardButton.WithCallbackData("✅ I've Joined", "check_join") }
         });
 
         await messageSender.SendTextMessageAsync(
             "⚠️ <b>Join Required</b>\n\n" +
-            "You must join our channel/group before using this bot.\n\n" +
-            "1️⃣ Click <b>Join Channel / Group</b> below\n" +
+            "You must join our group before using this bot.\n\n" +
+            "1️⃣ Click <b>Join Group</b> below\n" +
             "2️⃣ Then press <b>✅ I've Joined</b>",
             chatId, replyToMessageId, keyboard, cts);
     }
