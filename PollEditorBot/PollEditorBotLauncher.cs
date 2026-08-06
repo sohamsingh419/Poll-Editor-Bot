@@ -160,24 +160,34 @@ public class PollEditorBotLauncher
         string channel = TelegramSettings.ForceJoinChannel;
         if (string.IsNullOrEmpty(channel)) return true;
 
+        // For private groups the bot needs a numeric chat ID, not an invite link.
+        // Use FORCE_JOIN_CHAT_ID when set; fall back to FORCE_JOIN_CHANNEL (@username).
+        string chatIdentifier = !string.IsNullOrEmpty(TelegramSettings.ForceJoinChatId)
+            ? TelegramSettings.ForceJoinChatId
+            : channel;
+
         try
         {
-            ChatMember member = await bot.GetChatMemberAsync(channel, userId);
+            ChatMember member = await bot.GetChatMemberAsync(chatIdentifier, userId);
             return member.Status is ChatMemberStatus.Member
                 or ChatMemberStatus.Administrator
                 or ChatMemberStatus.Creator;
         }
         catch
         {
-            // If we can't check (e.g. bot not in channel), don't block the user
+            // If we can't check (e.g. bot not in group), don't block the user
             return true;
         }
     }
 
     async Task SendForceJoinPromptAsync(long chatId, int replyToMessageId, CancellationTokenSource cts)
     {
-        string channel = TelegramSettings.ForceJoinChannel.TrimStart('@');
-        string joinUrl = $"https://t.me/{channel}";
+        string channel = TelegramSettings.ForceJoinChannel;
+
+        // Support invite links (https://t.me/+xxx) directly, or build URL from @username
+        string joinUrl = channel.StartsWith("http", StringComparison.OrdinalIgnoreCase)
+            ? channel
+            : $"https://t.me/{channel.TrimStart('@')}";
 
         var keyboard = new InlineKeyboardMarkup(new[]
         {
