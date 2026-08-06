@@ -428,7 +428,7 @@ public class PollEditorBotLauncher
             bulkSession.AddPoll(pollMessage);
             int count = bulkSession.Polls.Count;
             await messageSender.SendTextMessageAsync(
-                $"✅ Poll #{count} added!\n\nSend more polls or type <code>/bulk_done</code> to start editing.",
+                $"✅ Poll #{count} added!\n\nSend more polls or type /bulk_done to start editing.",
                 chatId, replyToMessageId, new ReplyKeyboardRemove(), cts);
             await logging.LogPollMessageAsync(pollMessage);
             return;
