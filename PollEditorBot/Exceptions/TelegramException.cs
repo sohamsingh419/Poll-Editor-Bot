@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -21,7 +21,6 @@ public class TelegramException : Exception
 
     public static readonly string OnlyPrivateChatsSupported = ErrorTypeStr("ONLY_PRIVATE_CHATS_SUPPORTED", "This bot can be used only in private chats");
 
-    const string readmeErrorsLink = "https://github.com/Kurulko/Poll-Editor-Bot/blob/master/README.md#errors";
     static string ErrorTypeStr(string type, string error)
-        => $"❌ <b>{type}</b>: {error}. To learn more, read <a href='{readmeErrorsLink}'>it</a>";
+        => $"❌ <b>{type}</b>: {error}.";
 }
