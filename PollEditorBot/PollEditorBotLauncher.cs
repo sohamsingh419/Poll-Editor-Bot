@@ -141,10 +141,8 @@ public class PollEditorBotLauncher
                 else
                     await HandleAnotherMessageTypeAsync(chatId, replyToMessageId, cts);
             }
-            else
-            {
-                await LogWarningMessage(TelegramException.OnlyPrivateChatsSupported, chatId, replyToMessageId, null, cts);
-            }
+            // Silently ignore group/channel messages — bot works in private chats only
+            // (replying in groups causes spam, especially when bot is added as admin)
         }
         else if (update.CallbackQuery is { } callbackQuery)
         {
@@ -191,14 +189,14 @@ public class PollEditorBotLauncher
 
         var keyboard = new InlineKeyboardMarkup(new[]
         {
-            new[] { InlineKeyboardButton.WithUrl("📢 Join Group", joinUrl) },
+            new[] { InlineKeyboardButton.WithUrl("📢 Join Channel / Group", joinUrl) },
             new[] { InlineKeyboardButton.WithCallbackData("✅ I've Joined", "check_join") }
         });
 
         await messageSender.SendTextMessageAsync(
             "⚠️ <b>Join Required</b>\n\n" +
-            "You must join our group before using this bot.\n\n" +
-            "1️⃣ Click <b>Join Group</b> below\n" +
+            "You must join our channel/group before using this bot.\n\n" +
+            "1️⃣ Click <b>Join Channel / Group</b> below\n" +
             "2️⃣ Then press <b>✅ I've Joined</b>",
             chatId, replyToMessageId, keyboard, cts);
     }
@@ -421,7 +419,7 @@ public class PollEditorBotLauncher
             bulkSession.AddPoll(pollMessage);
             int count = bulkSession.Polls.Count;
             await messageSender.SendTextMessageAsync(
-                $"✅ Poll #{count} added!\n\nSend more polls or type /bulk_done to start editing.",
+                $"✅ Poll #{count} added!\n\nSend more polls or type <code>/bulk_done</code> to start editing.",
                 chatId, replyToMessageId, new ReplyKeyboardRemove(), cts);
             await logging.LogPollMessageAsync(pollMessage);
             return;
