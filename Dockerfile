@@ -13,7 +13,9 @@ FROM mcr.microsoft.com/dotnet/aspnet:6.0
 WORKDIR /app
 COPY --from=build /app/publish .
 
-RUN adduser --disabled-password --gecos "" appuser
+RUN adduser --disabled-password --gecos "" appuser \
+    && mkdir -p /app/data \
+    && chown appuser:appuser /app/data
 USER appuser
 
 # PORT is set by Render automatically; default 8080
