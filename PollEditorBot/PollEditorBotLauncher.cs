@@ -13,6 +13,7 @@ using PollEditorBot.Exceptions;
 using PollEditorBot.Loggers;
 using PollEditorBot.Commands;
 using PollEditorBot.Bulk;
+using PollEditorBot.Storage;
 using Telegram.Bot.Types.ReplyMarkups;
 
 namespace PollEditorBot;
@@ -30,7 +31,8 @@ public class PollEditorBotLauncher
     readonly Dictionary<long, BulkEditSession> bulkSessions = new();
 
     // All users who have ever started the bot — used for broadcast
-    readonly HashSet<long> allUsers = new();
+    // Loaded from disk on startup; saved on every new user (survives crash restarts)
+    readonly HashSet<long> allUsers;
 
     string botName = string.Empty;
 
@@ -40,6 +42,17 @@ public class PollEditorBotLauncher
         logging = new(logger);
         bot = TelegramSettings.CurrentBot();
         messageSender = new(bot);
+        allUsers = UserStorage.Load(logger);
+        logger.LogInformationLine($"Loaded {allUsers.Count} known users from storage.");
+    }
+
+    /// <summary>
+    /// Tracks a user and persists the list to disk if the user is new.
+    /// </summary>
+    void TrackUser(long chatId)
+    {
+        bool isNew = allUsers.Add(chatId);
+        if (isNew) UserStorage.Save(allUsers, logger);
     }
 
     public async Task StartReceivingAsync(CancellationTokenSource cts)
@@ -56,6 +69,52 @@ public class PollEditorBotLauncher
         User me = await bot.GetMeAsync();
         botName = me.FirstName;
         logger.LogInformationLine(botName, $"\"{botName}\" started listening ...");
+
+        // Register the command menu visible when users type "/" in Telegram
+        await bot.SetMyCommandsAsync(new[]
+        {
+            new BotCommand { Command = "start",                      Description = "▶️ Start the bot" },
+            new BotCommand { Command = "help",                       Description = "📋 View all commands" },
+
+            // ── Bulk edit ────────────────────────────────────────────
+            new BotCommand { Command = "bulk_edit",                  Description = "🔁 Edit multiple polls at once" },
+            new BotCommand { Command = "bulk_done",                  Description = "✅ Finish collecting polls (bulk mode)" },
+
+            // ── Poll creation ────────────────────────────────────────
+            new BotCommand { Command = "create_poll",                Description = "➕ Create a new poll from scratch" },
+
+            // ── Question ─────────────────────────────────────────────
+            new BotCommand { Command = "change_question",            Description = "✏️ Edit poll question" },
+            new BotCommand { Command = "change_question_by_template",Description = "📝 Edit question by template" },
+
+            // ── Options ──────────────────────────────────────────────
+            new BotCommand { Command = "change_option",              Description = "🔄 Edit a specific option" },
+            new BotCommand { Command = "change_options",             Description = "🔄 Edit all options at once" },
+            new BotCommand { Command = "insert_option",              Description = "➕ Insert an option at position" },
+            new BotCommand { Command = "add_option_to_end",          Description = "➕ Add option at the end" },
+            new BotCommand { Command = "delete_option",              Description = "🗑️ Remove a poll option" },
+
+            // ── Poll type / settings ─────────────────────────────────
+            new BotCommand { Command = "change_visibility",          Description = "👁️ Toggle public / anonymous" },
+            new BotCommand { Command = "change_poll_type",           Description = "🔀 Toggle quiz / regular" },
+            new BotCommand { Command = "change_is_multiple_answers", Description = "☑️ Toggle multiple answers" },
+
+            // ── Quiz only ────────────────────────────────────────────
+            new BotCommand { Command = "change_correct_option",      Description = "✅ Set correct option (quiz)" },
+            new BotCommand { Command = "change_explanation",         Description = "💡 Set explanation (quiz)" },
+            new BotCommand { Command = "drop_explanation",           Description = "🗑️ Remove explanation (quiz)" },
+
+            // ── Open period ──────────────────────────────────────────
+            new BotCommand { Command = "change_open_period",         Description = "⏱️ Set poll open period" },
+            new BotCommand { Command = "drop_open_period",           Description = "⏱️ Remove open period" },
+
+            // ── Extras ───────────────────────────────────────────────
+            new BotCommand { Command = "add_link",                   Description = "🔗 Add a link to the poll" },
+            new BotCommand { Command = "get_text_poll",              Description = "📄 Get poll as plain text" },
+
+            new BotCommand { Command = "stop",                       Description = "⏹️ Stop the bot" },
+        }, cancellationToken: cts.Token);
+        logger.LogInformationLine("Command menu registered.");
     }
 
     // ─── Update router ────────────────────────────────────────────────────────
@@ -70,8 +129,8 @@ public class PollEditorBotLauncher
 
             if (chat.Type == ChatType.Private)
             {
-                // Track every user who writes to the bot
-                allUsers.Add(chatId);
+                // Track every user who writes to the bot (persisted to disk)
+                TrackUser(chatId);
 
                 string senderStr = GetSenderStr(chat);
 
@@ -155,7 +214,7 @@ public class PollEditorBotLauncher
                     try { await bot.DeleteMessageAsync(chatId, messageId, cts.Token); } catch { }
 
                     // Track user and show the welcome message
-                    allUsers.Add(chatId);
+                    TrackUser(chatId);
                     await HandleTextMessageAsync(
                         callbackQuery.From.FirstName ?? "User",
                         CommandsStr.Start,
