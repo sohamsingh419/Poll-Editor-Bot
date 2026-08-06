@@ -28,9 +28,18 @@ public static class TelegramSettings
     public static string OwnerUsername =>
         Environment.GetEnvironmentVariable("OWNER_USERNAME")?.TrimStart('@') ?? "";
 
-    // Force join: set to @channelusername or @groupusername
+    // Force join invite link or @username — used for the "Join" button URL.
+    // For private groups, set this to the invite link (https://t.me/+xxx).
+    // For public channels/groups, set to @username.
     public static string ForceJoinChannel =>
         Environment.GetEnvironmentVariable("FORCE_JOIN_CHANNEL") ?? "";
+
+    // Numeric chat ID of the force-join group/channel (e.g. -1001234567890).
+    // Required when FORCE_JOIN_CHANNEL is a private invite link, because
+    // Telegram's API cannot check membership via an invite link — only via chat ID or @username.
+    // Leave empty if FORCE_JOIN_CHANNEL is a public @username (it doubles as the chat ID).
+    public static string ForceJoinChatId =>
+        Environment.GetEnvironmentVariable("FORCE_JOIN_CHAT_ID") ?? "";
 
     // Telegram poll limits
     public const int MinPollCountOfOptions = 2;
