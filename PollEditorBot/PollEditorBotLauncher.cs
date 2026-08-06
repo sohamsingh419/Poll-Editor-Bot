@@ -141,8 +141,17 @@ public class PollEditorBotLauncher
                 else
                     await HandleAnotherMessageTypeAsync(chatId, replyToMessageId, cts);
             }
-            // Silently ignore group/channel messages — bot works in private chats only
-            // (replying in groups causes spam, especially when bot is added as admin)
+            else
+            {
+                // In group/channel: only respond to commands (e.g. /start@BotName),
+                // silently ignore all other messages (regular text, polls, media, etc.)
+                if (message.Text is { } groupText && groupText.TrimStart().StartsWith("/"))
+                {
+                    await LogWarningMessage(
+                        TelegramException.OnlyPrivateChatsSupported,
+                        chatId, replyToMessageId, null, cts);
+                }
+            }
         }
         else if (update.CallbackQuery is { } callbackQuery)
         {
