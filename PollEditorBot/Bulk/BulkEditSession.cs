@@ -7,6 +7,7 @@ public enum BulkEditState
 {
     CollectingPolls,
     SettingOldName,
+    SettingQuestionOptionSuffix,
     SettingNewName,
     SettingExplanation,
     Done
@@ -14,7 +15,7 @@ public enum BulkEditState
 
 /// <summary>
 /// Manages a single user's bulk-edit session:
-/// collect polls → replace name → set explanation → send all.
+/// collect polls → replace name/add suffix → set explanation → send all.
 /// </summary>
 public class BulkEditSession
 {
@@ -35,6 +36,8 @@ public class BulkEditSession
             : OldName.Split('|').Select(n => n.Trim()).Where(n => n.Length > 0).ToArray();
 
     public bool SkipNameReplace  { get; private set; }
+    public string? QuestionSuffix { get; private set; }
+    public string? OptionSuffix { get; private set; }
     public string? Explanation   { get; private set; }
 
     // ── Helpers ────────────────────────────────────────────────────────────
@@ -64,6 +67,42 @@ public class BulkEditSession
             OldName = name;
             State = BulkEditState.SettingNewName;
         }
+    }
+
+    /// <summary>
+    /// Starts the no-old-name path. The next input is
+    /// "text to append to question | text to append to each option".
+    /// </summary>
+    public void StartQuestionOptionSuffix()
+        => State = BulkEditState.SettingQuestionOptionSuffix;
+
+    /// <summary>
+    /// Appends the question and option suffixes supplied in the
+    /// "question | option" format.
+    /// </summary>
+    public bool SetQuestionOptionSuffix(string input)
+    {
+        string[] parts = input.Split('|', 2);
+        if (parts.Length != 2)
+            return false;
+
+        string questionSuffix = parts[0].Trim();
+        string optionSuffix = parts[1].Trim();
+        if (questionSuffix.Length == 0 && optionSuffix.Length == 0)
+            return false;
+
+        QuestionSuffix = questionSuffix;
+        OptionSuffix = optionSuffix;
+        ApplyQuestionOptionSuffix(questionSuffix, optionSuffix);
+        State = HasQuizPolls ? BulkEditState.SettingExplanation : BulkEditState.Done;
+        return true;
+    }
+
+    /// <summary>Skips all name-related changes and moves to explanation.</summary>
+    public void SkipAllNameChanges()
+    {
+        SkipNameReplace = true;
+        State = HasQuizPolls ? BulkEditState.SettingExplanation : BulkEditState.Done;
     }
 
     /// <summary>
@@ -127,6 +166,21 @@ public class BulkEditSession
             var nonEmpty = poll.Options.Where(o => !string.IsNullOrWhiteSpace(o.Text)).ToArray();
             if (nonEmpty.Length >= 2)
                 poll.Options = nonEmpty;
+        }
+    }
+
+    void ApplyQuestionOptionSuffix(string questionSuffix, string optionSuffix)
+    {
+        foreach (var poll in Polls)
+        {
+            if (questionSuffix.Length > 0)
+                poll.Question = $"{poll.Question} {questionSuffix}";
+
+            if (optionSuffix.Length > 0)
+            {
+                foreach (var option in poll.Options)
+                    option.Text = $"{option.Text} {optionSuffix}";
+            }
         }
     }
 
