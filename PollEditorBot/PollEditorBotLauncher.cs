@@ -483,14 +483,19 @@ public class PollEditorBotLauncher
                     await messageSender.SendTextMessageAsync(summary, chatId, replyToMessageId, null, cts);
 
                     // Ask for old name
-                    var keyboard = new ReplyKeyboardMarkup(new[] { new KeyboardButton(CommandsStr.BulkSkipName) })
-                        { ResizeKeyboard = true, OneTimeKeyboard = true };
+                    var keyboard = new ReplyKeyboardMarkup(new[]
+                    {
+                        new KeyboardButton(CommandsStr.BulkSkipName),
+                        new KeyboardButton(CommandsStr.BulkSkipAllNameChanges)
+                    }) { ResizeKeyboard = true, OneTimeKeyboard = true };
                     await messageSender.SendTextMessageAsync(
                         "✏️ <b>Step 1/2 — Name replacement</b>\n\n" +
                         "Send the <b>old name(s)</b> you want to replace in all polls.\n" +
                         "They will be searched in the question, options, and explanation.\n\n" +
                         "📌 For <b>multiple names</b>, separate them with <code>|</code>:\n" +
-                        "<code>Name1 | Name2 | Name3</code>",
+                        "<code>Name1 | Name2 | Name3</code>\n\n" +
+                        "If there is no old name, tap <b>⏭ Skip / No Old Name</b>.\n" +
+                        "You will then be asked for: <code>question text | option text</code>",
                         chatId, replyToMessageId, keyboard, cts);
                 }
                 else
@@ -502,12 +507,41 @@ public class PollEditorBotLauncher
                 break;
             }
 
+            // ── Waiting for question/option suffixes ─────────────────────────
+            case BulkEditState.SettingQuestionOptionSuffix:
+            {
+                if (!session.SetQuestionOptionSuffix(trimmed))
+                {
+                    await messageSender.SendTextMessageAsync(
+                        "⚠️ Please use this format:\n" +
+                        "<code>Question text | Option text</code>\n\n" +
+                        "At least one side must contain text. Please try again.",
+                        chatId, replyToMessageId, null, cts);
+                    return;
+                }
+
+                await AskExplanationOrSendAsync(session, chatId, replyToMessageId, cts);
+                break;
+            }
+
             // ── Waiting for old name ──────────────────────────────────────────
             case BulkEditState.SettingOldName:
             {
                 if (trimmed == CommandsStr.BulkSkipName)
                 {
-                    session.SetOldName(null); // skip name replacement
+                    session.StartQuestionOptionSuffix();
+                    await messageSender.SendTextMessageAsync(
+                        "📝 <b>No old name selected</b>\n\n" +
+                        "Now send what should be added after the question and after every option.\n" +
+                        "Use exactly this format:\n" +
+                        "<code>Question text | Option text</code>\n\n" +
+                        "Example:\n" +
+                        "<code>- Sohan | - Sohan</code>",
+                        chatId, replyToMessageId, new ReplyKeyboardRemove(), cts);
+                }
+                else if (trimmed == CommandsStr.BulkSkipAllNameChanges)
+                {
+                    session.SkipAllNameChanges();
                     await AskExplanationOrSendAsync(session, chatId, replyToMessageId, cts);
                 }
                 else
