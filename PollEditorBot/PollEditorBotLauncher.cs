@@ -512,10 +512,12 @@ public class PollEditorBotLauncher
             {
                 if (!session.SetQuestionOptionSuffix(trimmed))
                 {
+                    string errorMessage = session.QuestionOptionSuffixError
+                        ?? "Please use this format:\n" +
+                           "<code>Question text | Option text</code>\n\n" +
+                           "At least one side must contain text. Please try again.";
                     await messageSender.SendTextMessageAsync(
-                        "⚠️ Please use this format:\n" +
-                        "<code>Question text | Option text</code>\n\n" +
-                        "At least one side must contain text. Please try again.",
+                        $"⚠️ {errorMessage}",
                         chatId, replyToMessageId, null, cts);
                     return;
                 }
@@ -532,7 +534,7 @@ public class PollEditorBotLauncher
                     session.StartQuestionOptionSuffix();
                     await messageSender.SendTextMessageAsync(
                         "📝 <b>No old name selected</b>\n\n" +
-                        "Now send what should be added after the question and after every option.\n" +
+                        "Now send what should be added after the question and as one new option.\n" +
                         "Use exactly this format:\n" +
                         "<code>Question text | Option text</code>\n\n" +
                         "Example:\n" +
