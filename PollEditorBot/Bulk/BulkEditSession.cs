@@ -1,5 +1,6 @@
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
+using PollEditorBot.Settings;
 
 namespace PollEditorBot.Bulk;
 
@@ -38,6 +39,7 @@ public class BulkEditSession
     public bool SkipNameReplace  { get; private set; }
     public string? QuestionSuffix { get; private set; }
     public string? OptionSuffix { get; private set; }
+    public string? QuestionOptionSuffixError { get; private set; }
     public string? Explanation   { get; private set; }
 
     // ── Helpers ────────────────────────────────────────────────────────────
@@ -82,6 +84,7 @@ public class BulkEditSession
     /// </summary>
     public bool SetQuestionOptionSuffix(string input)
     {
+        QuestionOptionSuffixError = null;
         string[] parts = input.Split('|', 2);
         if (parts.Length != 2)
             return false;
@@ -90,6 +93,15 @@ public class BulkEditSession
         string optionSuffix = parts[1].Trim();
         if (questionSuffix.Length == 0 && optionSuffix.Length == 0)
             return false;
+
+        if (optionSuffix.Length > 0
+            && Polls.Any(p => p.Options.Length >= TelegramSettings.MaxPollCountOfOptions))
+        {
+            QuestionOptionSuffixError =
+                $"A poll already has {TelegramSettings.MaxPollCountOfOptions} options. " +
+                "Telegram does not allow another option to be added.";
+            return false;
+        }
 
         QuestionSuffix = questionSuffix;
         OptionSuffix = optionSuffix;
@@ -178,8 +190,9 @@ public class BulkEditSession
 
             if (optionSuffix.Length > 0)
             {
-                foreach (var option in poll.Options)
-                    option.Text = $"{option.Text} {optionSuffix}";
+                poll.Options = poll.Options
+                    .Append(new PollOption { Text = optionSuffix })
+                    .ToArray();
             }
         }
     }
