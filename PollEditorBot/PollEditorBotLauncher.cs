@@ -30,8 +30,8 @@ public class PollEditorBotLauncher
     // Bulk edit sessions (one per user)
     readonly Dictionary<long, BulkEditSession> bulkSessions = new();
 
-    // All users who have ever started the bot — used for broadcast
-    // Loaded from disk on startup; saved on every new user (survives crash restarts)
+    // All users who have ever started the bot — used as an in-memory cache
+    // for broadcast. PostgreSQL is the durable source of truth.
     readonly HashSet<long> allUsers;
 
     string botName = string.Empty;
@@ -42,21 +42,23 @@ public class PollEditorBotLauncher
         logging = new(logger);
         bot = TelegramSettings.CurrentBot();
         messageSender = new(bot);
-        allUsers = UserStorage.Load(logger);
-        logger.LogInformationLine($"Loaded {allUsers.Count} known users from storage.");
+        allUsers = new();
     }
 
     /// <summary>
-    /// Tracks a user and persists the list to disk if the user is new.
+    /// Tracks a user and persists their chat ID in PostgreSQL.
     /// </summary>
-    void TrackUser(long chatId)
+    async Task TrackUserAsync(long chatId)
     {
-        bool isNew = allUsers.Add(chatId);
-        if (isNew) UserStorage.Save(allUsers, logger);
+        allUsers.Add(chatId);
+        await UserStorage.UpsertUserAsync(chatId, logger);
     }
 
     public async Task StartReceivingAsync(CancellationTokenSource cts)
     {
+        allUsers.UnionWith(await UserStorage.LoadAsync(logger));
+        logger.LogInformationLine($"Loaded {allUsers.Count} known users from storage.");
+
         // Empty array = receive ALL update types (including CallbackQuery)
         ReceiverOptions receiverOptions = new ReceiverOptions() { AllowedUpdates = Array.Empty<UpdateType>() };
 
@@ -129,8 +131,8 @@ public class PollEditorBotLauncher
 
             if (chat.Type == ChatType.Private)
             {
-                // Track every user who writes to the bot (persisted to disk)
-                TrackUser(chatId);
+                // Track every user who writes to the bot (persisted in PostgreSQL)
+                await TrackUserAsync(chatId);
 
                 string senderStr = GetSenderStr(chat);
 
@@ -231,7 +233,7 @@ public class PollEditorBotLauncher
                     try { await bot.DeleteMessageAsync(chatId, messageId, cts.Token); } catch { }
 
                     // Track user and show the welcome message
-                    TrackUser(chatId);
+                    await TrackUserAsync(chatId);
                     await HandleTextMessageAsync(
                         callbackQuery.From.FirstName ?? "User",
                         CommandsStr.Start,
@@ -385,12 +387,18 @@ public class PollEditorBotLauncher
             return;
         }
 
+        // Reload from the durable store so a redeploy or a stale in-memory
+        // cache cannot make the broadcast recipient list incomplete.
+        HashSet<long> broadcastUsers = await UserStorage.GetAllAsync(logger);
+        allUsers.UnionWith(broadcastUsers);
+        broadcastUsers.UnionWith(allUsers);
+
         await messageSender.SendTextMessageAsync(
-            $"📤 Broadcasting to {allUsers.Count} users...",
+            $"📤 Broadcasting to {broadcastUsers.Count} users...",
             chatId, replyToMessageId, null, cts);
 
         int sent = 0, failed = 0;
-        foreach (long uid in allUsers.ToList())
+        foreach (long uid in broadcastUsers)
         {
             try
             {
