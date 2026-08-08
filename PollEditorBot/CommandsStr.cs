@@ -36,7 +36,8 @@ public struct CommandsStr
     public const string BulkDone = "/bulk_done";
 
     // ── Bulk keyboard button labels (not slash-commands) ─────────────────
-    public const string BulkSkipName        = "⏭ Skip Name";
+    public const string BulkSkipName        = "⏭ Skip / No Old Name";
+    public const string BulkSkipAllNameChanges = "⏭ Skip Without Name Changes";
     public const string BulkEmptyName       = "🚫 Empty (No Name)";
     public const string BulkSkipExplanation = "⏭ Skip Explanation";
 }
