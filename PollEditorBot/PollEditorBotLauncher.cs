@@ -131,6 +131,15 @@ public class PollEditorBotLauncher
 
             if (chat.Type == ChatType.Private)
             {
+                // Force-join is an access requirement for every bot interaction,
+                // not only for /start. Check it before tracking or processing
+                // commands, polls, and messages so users cannot bypass it.
+                if (!await IsUserAllowedAsync(chatId))
+                {
+                    await SendForceJoinPromptAsync(chatId, replyToMessageId, cts);
+                    return;
+                }
+
                 // Track every user who writes to the bot (persisted in PostgreSQL)
                 await TrackUserAsync(chatId);
 
@@ -182,10 +191,12 @@ public class PollEditorBotLauncher
                 or ChatMemberStatus.Administrator
                 or ChatMemberStatus.Creator;
         }
-        catch
+        catch (Exception exc)
         {
-            // If we can't check (e.g. bot not in group), don't block the user
-            return true;
+            // Failing closed is intentional: if membership cannot be verified,
+            // users must not be able to bypass the force-join requirement.
+            logger.LogWarningLine($"Could not verify force-join membership for {userId}: {exc.Message}");
+            return false;
         }
     }
 
@@ -271,15 +282,6 @@ public class PollEditorBotLauncher
             if (messageText.StartsWith(CommandsStr.Broadcast))
             {
                 await HandleBroadcastAsync(messageText, chatId, replyToMessageId, cts);
-                return;
-            }
-
-            // ── Force join check (only on /start) ────────────────────────────
-            if (messageText.Trim() == CommandsStr.Start
-                && !string.IsNullOrEmpty(TelegramSettings.ForceJoinChannel)
-                && !await IsUserAllowedAsync(chatId))
-            {
-                await SendForceJoinPromptAsync(chatId, replyToMessageId, cts);
                 return;
             }
 
