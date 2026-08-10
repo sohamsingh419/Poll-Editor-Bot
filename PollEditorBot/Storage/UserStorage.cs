@@ -81,9 +81,37 @@ public static class UserStorage
         if (string.IsNullOrWhiteSpace(connectionString))
             throw new InvalidOperationException("DATABASE_URL environment variable is not set.");
 
+        // Some hosted PostgreSQL providers expose a URI ending in a bare
+        // "?sslmode". Npgsql requires a value, so treat that shorthand as the
+        // usual hosted-database setting instead of rejecting the whole URL.
+        connectionString = NormalizeConnectionString(connectionString);
+
         var connection = new NpgsqlConnection(connectionString);
         await connection.OpenAsync();
         return connection;
+    }
+
+    static string NormalizeConnectionString(string connectionString)
+    {
+        int queryStart = connectionString.IndexOf('?');
+        if (queryStart < 0 || queryStart == connectionString.Length - 1)
+            return connectionString;
+
+        string baseUri = connectionString[..queryStart];
+        string query = connectionString[(queryStart + 1)..];
+        string[] parameters = query.Split('&', StringSplitOptions.None);
+
+        for (int i = 0; i < parameters.Length; i++)
+        {
+            if (parameters[i].IndexOf('=') >= 0)
+                continue;
+
+            string parameterName = Uri.UnescapeDataString(parameters[i]);
+            if (string.Equals(parameterName, "sslmode", StringComparison.OrdinalIgnoreCase))
+                parameters[i] = "sslmode=require";
+        }
+
+        return $"{baseUri}?{string.Join("&", parameters)}";
     }
 
     static async Task<HashSet<long>> ReadUsersAsync(NpgsqlConnection connection)
