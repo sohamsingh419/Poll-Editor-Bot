@@ -37,9 +37,9 @@ public static class UserStorage
 
             return users;
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            logger?.LogWarningLine($"PostgreSQL user storage unavailable: {ex.Message}");
+            logger?.LogWarningLine("PostgreSQL user storage unavailable. Check DATABASE_URL and database availability.");
             return LoadLegacyUsers(logger);
         }
     }
@@ -53,9 +53,9 @@ public static class UserStorage
             await EnsureSchemaAsync(connection);
             await UpsertAsync(connection, chatId);
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            logger?.LogWarningLine($"UserStorage.Save warning: {ex.Message}");
+            logger?.LogWarningLine("UserStorage.Save warning: PostgreSQL connection or write failed.");
         }
     }
 
@@ -68,9 +68,9 @@ public static class UserStorage
             await EnsureSchemaAsync(connection);
             return await ReadUsersAsync(connection);
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            logger?.LogWarningLine($"UserStorage.GetAll warning: {ex.Message}");
+            logger?.LogWarningLine("UserStorage.GetAll warning: PostgreSQL connection or read failed.");
             return LoadLegacyUsers(logger);
         }
     }
@@ -81,9 +81,6 @@ public static class UserStorage
         if (string.IsNullOrWhiteSpace(connectionString))
             throw new InvalidOperationException("DATABASE_URL environment variable is not set.");
 
-        // Some hosted PostgreSQL providers expose a URI ending in a bare
-        // "?sslmode". Npgsql requires a value, so treat that shorthand as the
-        // usual hosted-database setting instead of rejecting the whole URL.
         connectionString = NormalizeConnectionString(connectionString);
 
         var connection = new NpgsqlConnection(connectionString);
@@ -93,25 +90,46 @@ public static class UserStorage
 
     static string NormalizeConnectionString(string connectionString)
     {
-        int queryStart = connectionString.IndexOf('?');
-        if (queryStart < 0 || queryStart == connectionString.Length - 1)
-            return connectionString;
-
-        string baseUri = connectionString[..queryStart];
-        string query = connectionString[(queryStart + 1)..];
-        string[] parameters = query.Split('&', StringSplitOptions.None);
-
-        for (int i = 0; i < parameters.Length; i++)
+        if (!Uri.TryCreate(connectionString, UriKind.Absolute, out Uri? databaseUri)
+            || (databaseUri.Scheme != "postgresql" && databaseUri.Scheme != "postgres"))
         {
-            if (parameters[i].IndexOf('=') >= 0)
-                continue;
-
-            string parameterName = Uri.UnescapeDataString(parameters[i]);
-            if (string.Equals(parameterName, "sslmode", StringComparison.OrdinalIgnoreCase))
-                parameters[i] = "sslmode=require";
+            return connectionString;
         }
 
-        return $"{baseUri}?{string.Join("&", parameters)}";
+        var builder = new NpgsqlConnectionStringBuilder
+        {
+            Host = databaseUri.Host,
+            Port = databaseUri.IsDefaultPort ? 5432 : databaseUri.Port,
+            Database = Uri.UnescapeDataString(databaseUri.AbsolutePath.TrimStart('/')),
+            SslMode = SslMode.Require
+        };
+
+        string[] credentials = databaseUri.UserInfo.Split(':', 2);
+        if (credentials.Length > 0 && credentials[0].Length > 0)
+            builder.Username = Uri.UnescapeDataString(credentials[0]);
+        if (credentials.Length > 1)
+            builder.Password = Uri.UnescapeDataString(credentials[1]);
+
+        // Hosted PostgreSQL URLs may contain "?sslmode" without a value.
+        // Require TLS for all URI-style database URLs, including that form.
+        foreach (string parameter in databaseUri.Query.TrimStart('?')
+                     .Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            string[] keyValue = parameter.Split('=', 2);
+            if (keyValue.Length == 0
+                || !string.Equals(Uri.UnescapeDataString(keyValue[0]), "sslmode",
+                    StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            if (keyValue.Length > 1
+                && Enum.TryParse<SslMode>(
+                    Uri.UnescapeDataString(keyValue[1]), true, out SslMode sslMode))
+            {
+                builder.SslMode = sslMode;
+            }
+        }
+
+        return builder.ConnectionString;
     }
 
     static async Task<HashSet<long>> ReadUsersAsync(NpgsqlConnection connection)
