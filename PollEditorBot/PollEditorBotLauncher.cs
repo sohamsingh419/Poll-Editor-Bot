@@ -72,7 +72,8 @@ public class PollEditorBotLauncher
         botName = me.FirstName;
         logger.LogInformationLine(botName, $"\"{botName}\" started listening ...");
 
-        // Register the command menu visible when users type "/" in Telegram
+        // Register the command menu only for private chats (DMs).
+        // Group and channel users should not see or use this bot's commands.
         await bot.SetMyCommandsAsync(new[]
         {
             new BotCommand { Command = "start",                      Description = "▶️ Start the bot" },
@@ -115,7 +116,7 @@ public class PollEditorBotLauncher
             new BotCommand { Command = "get_text_poll",              Description = "📄 Get poll as plain text" },
 
             new BotCommand { Command = "stop",                       Description = "⏹️ Stop the bot" },
-        }, cancellationToken: cts.Token);
+        }, scope: new BotCommandScopeAllPrivateChats(), cancellationToken: cts.Token);
         logger.LogInformationLine("Command menu registered.");
     }
 
@@ -152,21 +153,14 @@ public class PollEditorBotLauncher
                 else
                     await HandleAnotherMessageTypeAsync(chatId, replyToMessageId, cts);
             }
-            else
-            {
-                // In group/channel: only respond to commands (e.g. /start@BotName),
-                // silently ignore all other messages (regular text, polls, media, etc.)
-                if (message.Text is { } groupText && groupText.TrimStart().StartsWith("/"))
-                {
-                    await LogWarningMessage(
-                        TelegramException.OnlyPrivateChatsSupported,
-                        chatId, replyToMessageId, null, cts);
-                }
-            }
+            // The bot is DM-only. Ignore every group/supergroup/channel message
+            // without replying, so it never participates in group conversations.
         }
         else if (update.CallbackQuery is { } callbackQuery)
         {
-            await HandleCallbackQueryAsync(callbackQuery, cts);
+            // Inline buttons from a group/channel must not activate bot flows.
+            if (callbackQuery.Message?.Chat.Type == ChatType.Private)
+                await HandleCallbackQueryAsync(callbackQuery, cts);
         }
     }
 
