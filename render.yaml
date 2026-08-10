@@ -10,12 +10,19 @@ services:
       - key: TELEGRAM_BOT_TOKEN
         sync: false          # you will enter this in the Render dashboard
 
+      # PostgreSQL URI, for example:
+      # postgresql://user:password@host/database?sslmode=require
+      - key: DATABASE_URL
+        sync: false
+
       # Optional — fill these in the Render dashboard if needed
       - key: OWNER_ID
         sync: false
       - key: OWNER_USERNAME
         sync: false
       - key: FORCE_JOIN_CHANNEL
+        sync: false
+      - key: FORCE_JOIN_CHAT_ID
         sync: false
 
     healthCheckPath: /       # Render uses GET / to verify the service is up
